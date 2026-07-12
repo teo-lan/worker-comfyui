@@ -64,6 +64,16 @@ RUN if [ "$ENABLE_PYTORCH_UPGRADE" = "true" ]; then \
       uv pip install --force-reinstall torch torchvision torchaudio --index-url ${PYTORCH_INDEX_URL}; \
     fi
 
+# --- DREAM: custom nodes for image-to-video (Wan 2.2) ---
+# VideoHelperSuite encodes the decoded frames into an mp4. Cloned HERE, before
+# the requirements-mirror step below, so its Python deps land in /opt/venv and
+# the build-time smoke test validates its imports.
+RUN git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite \
+      /comfyui/custom_nodes/ComfyUI-VideoHelperSuite
+# VideoOutputBridge re-emits the VHS mp4 under the "images" key so the RunPod
+# handler (which ignores VHS's "gifs" key) returns it. Vendored, zero deps.
+COPY custom_nodes/VideoOutputBridge /comfyui/custom_nodes/VideoOutputBridge
+
 # comfy-cli installs ComfyUI into its own workspace venv (/comfyui/.venv), but
 # start.sh launches ComfyUI with /opt/venv's python. That mismatch leaves the
 # launch venv missing ComfyUI's runtime deps (e.g. sqlalchemy, pulled in by
