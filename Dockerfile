@@ -70,6 +70,15 @@ RUN if [ "$ENABLE_PYTORCH_UPGRADE" = "true" ]; then \
 # the build-time smoke test validates its imports.
 RUN git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite \
       /comfyui/custom_nodes/ComfyUI-VideoHelperSuite
+# The native WanFirstLastFrameToVideo node uses the Wan 2.1 VAE layout. DREAM's
+# TI2V-5B checkpoint uses the Wan 2.2 VAE, so this small node provides the same
+# start/end-frame conditioning with the correct latent format. Pin it so a
+# remote update cannot silently change the API used by the iOS workflow.
+ARG WAN22_FLF_NODE_COMMIT=caa90f0d5e2e33cbe7761fc18553d07e1d30d1ff
+RUN git clone https://github.com/stduhpf/ComfyUI--Wan22FirstLastFrameToVideoLatent \
+      /comfyui/custom_nodes/Wan22FirstLastFrameToVideoLatent \
+    && git -C /comfyui/custom_nodes/Wan22FirstLastFrameToVideoLatent \
+      checkout --detach "${WAN22_FLF_NODE_COMMIT}"
 # VideoOutputBridge re-emits the VHS mp4 under the "images" key so the RunPod
 # handler (which ignores VHS's "gifs" key) returns it. Vendored, zero deps.
 COPY custom_nodes/VideoOutputBridge /comfyui/custom_nodes/VideoOutputBridge
