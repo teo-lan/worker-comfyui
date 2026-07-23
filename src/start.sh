@@ -26,10 +26,21 @@ export LD_PRELOAD="${TCMALLOC}"
 # GPU pre-flight check
 # Verify that the GPU is accessible before starting ComfyUI. If PyTorch
 # cannot initialize CUDA the worker will never be able to process jobs,
-# so we fail fast with an actionable error message.
+# so we fail with an actionable error after allowing transient startup races.
 # ---------------------------------------------------------------------------
 echo "worker-comfyui: Checking GPU availability..."
-if ! GPU_CHECK=$(python3 -c "
+
+# A newly provisioned RunPod host can start the container a few seconds before
+# CUDA is ready. A single failed probe used to exit the container immediately,
+# causing a restart loop where every attempt hit the same transient race.
+# Retry for up to one minute, while still failing clearly for a genuinely
+# incompatible GPU/driver combination.
+GPU_CHECK_MAX_ATTEMPTS=12
+GPU_CHECK_RETRY_SECONDS=5
+GPU_CHECK_ATTEMPT=1
+
+while true; do
+    if GPU_CHECK=$(python3 -c "
 import torch
 try:
     torch.cuda.init()
@@ -47,14 +58,25 @@ except Exception as e:
     print(f'FAIL: {e}')
     exit(1)
 " 2>&1); then
-    echo "worker-comfyui: GPU is not available or incompatible with this PyTorch build:"
+        echo "worker-comfyui: GPU available — $GPU_CHECK"
+        break
+    fi
+
+    echo "worker-comfyui: GPU check attempt ${GPU_CHECK_ATTEMPT}/${GPU_CHECK_MAX_ATTEMPTS} failed:"
     echo "worker-comfyui: $GPU_CHECK"
-    echo "worker-comfyui: A 'no kernel image is available' error means this torch build"
-    echo "worker-comfyui: lacks kernels for this GPU. Otherwise the GPU may not be"
-    echo "worker-comfyui: properly initialized — please contact RunPod support."
-    exit 1
-fi
-echo "worker-comfyui: GPU available — $GPU_CHECK"
+
+    if [ "$GPU_CHECK_ATTEMPT" -ge "$GPU_CHECK_MAX_ATTEMPTS" ]; then
+        echo "worker-comfyui: GPU is not available or incompatible with this PyTorch build."
+        echo "worker-comfyui: A 'no kernel image is available' error means this torch build"
+        echo "worker-comfyui: lacks kernels for this GPU. Otherwise the GPU may not be"
+        echo "worker-comfyui: properly initialized — please contact RunPod support."
+        exit 1
+    fi
+
+    echo "worker-comfyui: Retrying GPU check in ${GPU_CHECK_RETRY_SECONDS}s..."
+    sleep "$GPU_CHECK_RETRY_SECONDS"
+    GPU_CHECK_ATTEMPT=$((GPU_CHECK_ATTEMPT + 1))
+done
 
 # Ensure ComfyUI-Manager runs in offline network mode inside the container
 comfy-manager-set-mode offline || echo "worker-comfyui - Could not set ComfyUI-Manager network_mode" >&2
