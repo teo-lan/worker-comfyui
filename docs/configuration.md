@@ -42,6 +42,27 @@ Configure these variables **only** if you want the worker to upload generated im
 
 **Note:** Upload uses the `runpod` Python library helper `rp_upload.upload_image`, which handles creating a unique path within the bucket based on the `job_id`.
 
+## DREAM durable delivery outbox
+
+When a RunPod network volume is attached at `/runpod-volume`, every completed
+image or video is also copied to `/runpod-volume/dream-outbox/<job-id>` before
+the worker returns its normal API response. This protects generated media after
+RunPod's short asynchronous-result retention window.
+
+The DREAM client can request `{"operation":"outbox_get","job_id":"..."}` to
+recover a completed result, and sends delivered job IDs back with a later normal
+request in `outbox_acknowledgements`. Acknowledged files are deleted before that
+request runs. Undelivered files expire automatically after 72 hours.
+
+| Environment Variable          | Description                                             | Default                              |
+| ----------------------------- | ------------------------------------------------------- | ------------------------------------ |
+| `DREAM_OUTBOX_PATH`           | Persistent directory used for temporary media delivery | `/runpod-volume/dream-outbox`        |
+| `DREAM_OUTBOX_TTL_SECONDS`    | Fallback retention before automatic deletion           | `259200` (72 hours)                  |
+
+If no network volume is attached, generation still returns normally, but the
+response reports the outbox as unavailable and expired results cannot be
+recovered without regeneration.
+
 ### Example S3 Response
 
 If the S3 environment variables (`BUCKET_ENDPOINT_URL`, `BUCKET_ACCESS_KEY_ID`, `BUCKET_SECRET_ACCESS_KEY`) are correctly configured, a successful job response will look similar to this:

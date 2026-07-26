@@ -19,6 +19,13 @@ from network_volume import (
     is_network_volume_debug_enabled,
     run_network_volume_diagnostics,
 )
+from dream_outbox import (
+    delete as delete_outbox_jobs,
+    persist as persist_outbox_output,
+    prune as prune_outbox,
+    recover as recover_outbox_job,
+    ttl_seconds as outbox_ttl_seconds,
+)
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -569,6 +576,41 @@ def get_image_data(filename, subfolder, image_type):
         return None
 
 
+def handle_outbox_operation(job_input):
+    """Handle a lightweight recovery/delete request without running ComfyUI."""
+    operation = job_input.get("operation")
+    if operation == "outbox_get":
+        original_job_id = job_input.get("job_id")
+        try:
+            outputs = recover_outbox_job(original_job_id)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        status = "available" if outputs else "not_found"
+        return {
+            "images": outputs,
+            "outbox": {
+                "status": status,
+                "job_id": original_job_id,
+                "retention_seconds": outbox_ttl_seconds(),
+            },
+        }
+
+    if operation == "outbox_delete":
+        job_ids = job_input.get("job_ids", [])
+        try:
+            deleted = delete_outbox_jobs(job_ids)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {
+            "outbox": {
+                "status": "deleted",
+                "deleted_job_ids": deleted,
+            }
+        }
+
+    return {"error": f"Unsupported outbox operation: {operation}"}
+
+
 def handler(job):
     """
     Handles a job using ComfyUI via websockets for status and image retrieval.
@@ -587,6 +629,28 @@ def handler(job):
 
     job_input = job["input"]
     job_id = job["id"]
+
+    # Outbox reads/deletes are intentionally handled before checking ComfyUI:
+    # recovering already-rendered bytes must not depend on model startup.
+    if isinstance(job_input, dict) and job_input.get("operation"):
+        prune_outbox()
+        return handle_outbox_operation(job_input)
+
+    # Delivery acknowledgements ride along with the next normal worker request,
+    # avoiding a GPU cold start whose only purpose would be deleting a few files.
+    if isinstance(job_input, dict):
+        acknowledgements = job_input.get("outbox_acknowledgements", [])
+        if acknowledgements:
+            try:
+                deleted = delete_outbox_jobs(acknowledgements)
+                print(
+                    f"worker-comfyui - Deleted {len(deleted)} acknowledged outbox job(s)."
+                )
+            except ValueError as exc:
+                print(f"worker-comfyui - Ignoring invalid outbox acknowledgements: {exc}")
+    pruned = prune_outbox()
+    if pruned:
+        print(f"worker-comfyui - Pruned {len(pruned)} expired outbox job(s).")
 
     # Make sure that the input is valid
     validated_data, error_message = validate_input(job_input)
@@ -622,6 +686,8 @@ def handler(job):
     prompt_id = None
     output_data = []
     errors = []
+    outbox_persisted_count = 0
+    outbox_output_index = 0
 
     try:
         # Establish WebSocket connection
@@ -775,6 +841,22 @@ def handler(job):
                     image_bytes = get_image_data(filename, subfolder, img_type)
 
                     if image_bytes:
+                        persisted = persist_outbox_output(
+                            job_id,
+                            filename,
+                            image_bytes,
+                            output_index=outbox_output_index,
+                        )
+                        outbox_output_index += 1
+                        if persisted:
+                            outbox_persisted_count += 1
+                            print(
+                                f"worker-comfyui - Persisted {filename} in DREAM outbox."
+                            )
+                        else:
+                            print(
+                                f"worker-comfyui - WARNING: persistent DREAM outbox unavailable for {filename}."
+                            )
                         file_extension = os.path.splitext(filename)[1] or ".png"
 
                         if os.environ.get("BUCKET_ENDPOINT_URL"):
@@ -800,6 +882,7 @@ def handler(job):
                                         "filename": filename,
                                         "type": "s3_url",
                                         "data": s3_url,
+                                        "outbox_persisted": persisted,
                                     }
                                 )
                             except Exception as e:
@@ -827,6 +910,7 @@ def handler(job):
                                         "filename": filename,
                                         "type": "base64",
                                         "data": base64_image,
+                                        "outbox_persisted": persisted,
                                     }
                                 )
                                 print(f"worker-comfyui - Encoded {filename} as base64")
@@ -874,6 +958,16 @@ def handler(job):
 
     if output_data:
         final_result["images"] = output_data
+        final_result["outbox"] = {
+            "status": (
+                "persisted"
+                if outbox_persisted_count == len(output_data)
+                else "unavailable"
+            ),
+            "job_id": job_id,
+            "persisted_outputs": outbox_persisted_count,
+            "retention_seconds": outbox_ttl_seconds(),
+        }
 
     if errors:
         final_result["errors"] = errors
