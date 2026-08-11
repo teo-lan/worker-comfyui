@@ -42,6 +42,7 @@ GPU_CHECK_ATTEMPT=1
 while true; do
     if GPU_CHECK=$(python3 -c "
 import torch
+print(f'Runtime: torch {torch.__version__}, cuda {torch.version.cuda}', flush=True)
 try:
     torch.cuda.init()
     name = torch.cuda.get_device_name(0)
@@ -64,6 +65,14 @@ except Exception as e:
 
     echo "worker-comfyui: GPU check attempt ${GPU_CHECK_ATTEMPT}/${GPU_CHECK_MAX_ATTEMPTS} failed:"
     echo "worker-comfyui: $GPU_CHECK"
+
+    # These failures are deterministic for the current host/container pair.
+    # Retrying them only keeps jobs stalled before RunPod can replace the host.
+    if [[ "$GPU_CHECK" == *"driver on your system is too old"* ]] || \
+       [[ "$GPU_CHECK" == *"no kernel image is available"* ]]; then
+        echo "worker-comfyui: Deterministic CUDA incompatibility; exiting immediately so RunPod can replace this worker."
+        exit 1
+    fi
 
     if [ "$GPU_CHECK_ATTEMPT" -ge "$GPU_CHECK_MAX_ATTEMPTS" ]; then
         echo "worker-comfyui: GPU is not available or incompatible with this PyTorch build."

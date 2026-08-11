@@ -1,5 +1,5 @@
 # Build argument for base image selection
-ARG BASE_IMAGE=nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 # Stage 1: Base image with common dependencies
 FROM ${BASE_IMAGE} AS base
@@ -7,8 +7,8 @@ FROM ${BASE_IMAGE} AS base
 # Build arguments for this stage with sensible defaults for standalone builds
 ARG COMFYUI_VERSION=latest
 ARG CUDA_VERSION_FOR_COMFY
-ARG ENABLE_PYTORCH_UPGRADE=false
-ARG PYTORCH_INDEX_URL
+ARG ENABLE_PYTORCH_UPGRADE=true
+ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
 # Prevents prompts from packages asking for user input during installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -62,6 +62,15 @@ RUN if [ -n "${CUDA_VERSION_FOR_COMFY}" ]; then \
 # Upgrade PyTorch if needed (for newer CUDA versions)
 RUN if [ "$ENABLE_PYTORCH_UPGRADE" = "true" ]; then \
       uv pip install --force-reinstall torch torchvision torchaudio --index-url ${PYTORCH_INDEX_URL}; \
+    fi
+
+# RunPod's GitHub builder uses the Dockerfile defaults rather than docker-bake.
+# Keep that path on CUDA 12.8 wheels so hosts exposing a CUDA 12.8 driver can
+# start the worker, including RTX 50-series machines. Without this explicit
+# index, a later default PyTorch wheel can require a newer host driver and leave
+# every request queued while workers repeatedly exit during GPU pre-flight.
+RUN if [ "$ENABLE_PYTORCH_UPGRADE" = "true" ]; then \
+      python -c "import torch; assert torch.version.cuda and torch.version.cuda.startswith('12.8'), torch.version.cuda; print(f'Pinned torch {torch.__version__} / CUDA {torch.version.cuda}')"; \
     fi
 
 # --- DREAM: custom nodes for image-to-video (Wan 2.2) ---
