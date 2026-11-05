@@ -19,6 +19,7 @@ This project allows you to run ComfyUI workflows as a serverless API endpoint on
 - [API Specification](#api-specification)
 - [Usage](#usage)
 - [Getting the Workflow JSON](#getting-the-workflow-json)
+- [SSH Access](#ssh-access)
 - [Further Documentation](#further-documentation)
 
 ---
